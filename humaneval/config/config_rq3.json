@@ -1,0 +1,45 @@
+{
+  "dataset_path": "humaneval_test_dataset.csv",
+  "output_dir": "rq3_auto_annotations",
+  "id_column": "task_id",
+  "context_columns": [
+    "prompt",
+    "canonical_solution"
+  ],
+  "target_columns": [
+    "analysis_claude-3-5-sonnet-20240620_custom"
+  ],
+  "scoring_criteria": [
+    {
+      "criterion_id": "S1",
+      "question": "Did this critique point out the particular problem described just above?",
+      "guideline": "1: definitely missed, 4: I'm unsure, 7: definitely included",
+      "scale_min": 1,
+      "scale_max": 7,
+      "default_score": null
+    },
+    {
+      "criterion_id": "S2",
+      "question": "Are there any clear and severe problems that the critique missed?",
+      "guideline": "1: missing problems, 4: I'm unsure, 7: all problems mentioned",
+      "scale_min": 1,
+      "scale_max": 7,
+      "default_score": null
+    },
+    {
+      "criterion_id": "S6",
+      "question": "Overall, how good is this critique relative to the others?",
+      "guideline": "1: this is the worst critique, 7: this is the best critique",
+      "scale_min": 1,
+      "scale_max": 7,
+      "default_score": null
+    }
+  ],
+  "filter_column": null,
+  "filter_value": null,
+  "row_range": null,
+  "randomize_targets": false,
+  "template_prefix": "",
+  "template_suffix": "",
+  "file_naming_pattern": "{id}_{type}_{index}"
+}

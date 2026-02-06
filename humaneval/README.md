@@ -1,54 +1,377 @@
-# Humaneval Benchmark
+# HumanEval Module
 
-- Additionally, when pushing datasets to HuggingFace, make sure to install `git-lfs` for your OS.
+Core implementation of the code generation and evaluation pipeline.
 
-> Human Annotated Evaluation
+## 3-File Architecture
 
-- Evaluting bug analysis from LLM Judges follows the same grading criteria as the [OpenAI's paper](https://arxiv.org/abs/2407.00215).
-  <img src="./assets/critic_eval_table.PNG" alt="Description" width="400">
+This module is consolidated into **3 core files** for clarity and maintainability:
 
-> HuggingFace
+| File | Purpose | Size |
+|------|---------|------|
+| **core.py** | All pipeline logic (generation, execution, judgment) | ~450 lines |
+| **cli.py** | Command-line interface and routing | ~173 lines |
+| **analysis.py** | Export, statistics, and annotation tools | ~180 lines |
 
-- The completed dataset is uploaded at [https://huggingface.co/datasets/t4gandhi/code_correction_using_LLM]).
+This module now uses a strict 3-file design. Older wrapper and config modules have been removed.
 
-> Documentation
+## Module Structure
 
-- The data processing consists of several steps.
-- To modify the dataset/filepath that you want to work with for each Python script, simply adjust the constant (e.g. uppercase variables) strings located at the top of each file.
-- Note, from the first script to last script listed below, the main data is stored in the same file (e.g. `humaneval_test_dataset.py`). All of the other files/folders are for human data annotation.
-- **Important!**: make sure to complete each step before running the subsequent script.
+```
+humaneval/
+├── core.py             # Pipeline logic (gen, exec, judge)
+├── cli.py              # Command-line interface
+├── analysis.py         # Export, stats, annotation
+└── __init__.py         # Module init
+```
 
-1. `pipeline.py`
+## Quick Start
 
-- Run this file first to generate code solutions to each problem in the HumanEval dataset.
-- Note, to generate N solutions for the dataset, adjust the `ITER_NO` variable from `1..N` (e.g. run N separate times).
+Full pipeline:
+```bash
+python -m humaneval.cli run-all --model-choice haiku35 --judge-choice haiku35 --judge-id cl3-haiku-v1
+```
 
-2. `judge.py`
+Individual steps:
+```bash
+python -m humaneval.cli generate --model-choice haiku35
+python -m humaneval.cli judge --model-choice haiku35 --judge-choice haiku35 --judge-id cl3-haiku-v1
+python -m humaneval.cli export --model-choice haiku35 --judge-id cl3-haiku-v1
+```
 
-- After running `pipeline.py`, run this file to generate LLM Judge's analysis of any buggy code sample (e.g. code solutions) that fail the unit tests associated with each problem.
+View statistics:
+```bash
+python -m humaneval.cli stats
+```
 
-3. `generate_guides.py` (Manual Work Involved)
+See [../RUNBOOK.md](../RUNBOOK.md) for detailed execution guide.
 
-- Generates a folder of files for creating custom bug analysis (e.g. basically same as `judge.py`, but done manually to create high-quality data as ground truth).
-- Modify `*_custom.txt` to fill in your answers, take a look at `*_guide.txt` to reference LLM solutions for the same problem.
+## Available Commands
 
-4. `extract_human_analysis.py`
+| Command | Purpose | Args |
+|---------|---------|------|
+| generate | Generate code + unit tests | `--model-choice` |
+| judge | Generate LLM critiques | `--model-choice`, `--judge-choice`, `--judge-id` |
+| export | Create JSON bundles | `--model-choice`, `--judge-id` |
+| annotate | Interactive annotation | `--model-choice` or `--annotation-dir` |
+| extract | Extract to CSV | `--model-choice` or `--annotation-dir` |
+| stats | Show statistics | (none) |
+| run-all | Full pipeline | `--model-choice`, `--judge-choice`, `--judge-id` |
 
-- Extracts your custom bug analyses from step 3 and stores them in the CSV file (e.g. `humaneval_test_dataset.py`).
+## Core.py - Pipeline Logic (~450 lines)
 
-5. `generate_annotations.py` (Manual Work Involved)
+**All pipeline algorithms in one file**:
 
-- Generates a folder of files for scoring each LLM/Custom bug analyses for the buggy code samples.
-- For each `*_analysis_1.txt`, `*_analysis_2.txt`, ... files, fill in a number for each blank spot (e.g. `- S1: _/7`) between 1-7 depending on how good the bug analysis is for each category. Refer to table from OpenAI's paper above for the marking process.
+#### LLM Integration
+- `get_completion(prompt, model, temperature)` - API call with exponential backoff retry
+- Handles rate limits, timeouts, overload errors
+- Max 10 retries with exponential backoff (base 2)
 
-6. `extract_annotations.py`
+#### Phase 3.1: Code Generation
+- `run_codegen_humaneval(df, idx_range, model, iter_no, get_prompt, temperature)` - LLM code completions
+- Uses prompt templates and temperature=0.0 for deterministic output
 
-- Extracts your scoring for each problem and stores them in the CSV file (e.g. `humaneval_test_dataset.py`).
+#### Phase 3.2: Code Execution
+- `run_unit_tests(df, idx_range, model, iter_no)` - Execute generated code with 10-second timeout
+- Return statistics: total, correct, incorrect, invalid, timeout counts
+- Error categorization: CORRECT (exit 0), INCORRECT (exit non-0), INVALID (exception)
 
-7. `format_dataset.py`
+#### Phase 3.3: LLM-as-Judge
+- `run_judge(df, idx_range, model, iter_no, judge_model, judge_id)` - 3-round critique generation
+- Analyzes incorrect solutions with detailed prompts
+- Stores critiques in analysis columns
 
-- Takes a CSV file (e.g. `humaneval_test_dataset.py`) and extracts only the relevant columns and rows and stores them in another CSV file (e.g. `humaneval_test_dataset_v1.py`).
+#### Utilities
+- `run_python_file(path, timeout=10)` - Execute with timeout protection
+- `indent_lines(s)` - Format code for test composition
+- `contains_function_definition(code)` - Validate generated code
+- `save_dataframe_to_csv()`, `load_dataset()`, etc.
 
-8. `upload_to_hf.py`
+#### Prompt Templates
+- `get_prompt_template_data_collection_claude()` - Generation prompt
+- `get_prompt_template_judge_claude()` - Judge/critique prompt
 
-- Uploads the train/test datasets (e.g. stored as CSV files locally, such as `humaneval_train_dataset_v1.py` and `humaneval_test_dataset_v1.py`) into a HuggingFace dataset repo.
+## CLI.py - Command Interface (~173 lines)
+
+**Entry point and command routing**:
+
+- Argument parsing for 8 subcommands
+- Command dispatch with sys.argv manipulation
+- Manifest creation and step logging
+- Integration with all modules
+
+## Analysis.py - Export & Analysis (~180 lines)
+
+**Export and analysis functions**:
+
+#### Export
+- `export_to_json(model, judge_id)` - Create JSON annotation bundles
+- Per-task JSON files with ground truth, buggy solution, critiques
+- Organized in `outputs/analysis_{model}_human_annotation_dataset/`
+
+#### Statistics
+- `run_stats()` - Display dataset statistics
+- Shows execution status breakdown per model
+
+#### Annotation
+- `run_annotate(annotation_dir, limit)` - Interactive annotation CLI
+- `run_extract_annotations(annotation_dir)` - Extract to CSV format
+- `run_alignment_evaluation()` - Evaluate human-AI alignment
+- `run_generate_guides()` - Generate reference guides
+
+## Configuration (in core.py)
+
+Edit constants in `core.py` for models and experiment settings:
+- `MODEL_CATALOG`, `DEFAULT_MODEL_NAME`
+- `TEMPERATURE`, `NUM_ROUNDS`, `IDX_RANGE`
+
+## Pipeline Data Flow
+
+```
+cli.py (entry point)
+├─ generate
+│  └─ core.run_codegen_humaneval()
+│  └─ core.run_unit_tests()
+│
+├─ judge
+│  └─ core.run_judge()
+│
+├─ export
+│  └─ analysis.export_to_json()
+│
+├─ stats
+│  └─ analysis.run_stats()
+│
+└─ run-all
+   └─ execute all three steps
+```
+
+## Output Formats
+
+### CSV Columns Generated by Pipeline
+
+**Generated by Phase 3.1 (Generation)**:
+```
+result_{model}_no1  # Generated code string
+eval_{model}_no1    # CORRECT/INCORRECT/INVALID
+error_{model}_no1   # Error message (if failed)
+```
+
+**Generated by Phase 3.3 (Judgment)**:
+```
+analysis_{model}_wt_{judge_id}_rd1  # Round 1 critique
+analysis_{model}_wt_{judge_id}_rd2  # Round 2 critique
+analysis_{model}_wt_{judge_id}_rd3  # Round 3 critique
+```
+
+### JSON Bundle Format
+
+```json
+{
+  "task_id": "HumanEval/5",
+  "ground_truth_solution": "...",
+  "buggy_solution": "...",
+  "analyses": [
+    {
+      "analysis_id": 1,
+      "col_name": "analysis_model_wt_judge_rd1",
+      "target_analysis": "...",
+      "scores": {"S1": "_", "S2": "_", ...}
+    },
+    ...
+  ]
+}
+```
+
+## Dependencies
+
+```python
+# External
+litellm          # LLM API client for Claude
+pandas           # Data manipulation
+datasets         # HuggingFace dataset loading
+tqdm             # Progress bars
+python-dotenv    # .env file loading
+```
+
+## File Size Summary
+
+| File | Lines | Purpose |
+|------|-------|---------|
+| core.py | ~450 | Pipeline logic |
+| cli.py | ~173 | Interface |
+| analysis.py | ~180 | Export/analysis |
+| (wrappers removed) |  |  |
+| **Total** | **~1200** | Complete system |
+
+For detailed implementation documentation, see [../THESIS_CHAPTER_3_COMPLETE.md](../THESIS_CHAPTER_3_COMPLETE.md).
+
+### Judgment (in core.py)
+**Analyzes incorrect solutions** with LLM-as-judge via `core.run_judge()`.
+
+**Output Columns:**
+- `analysis_<model>_wt_<judge-id>_rd1` … `_rd3`: Critiques
+
+### Export (in analysis.py)
+**Converts results to JSON** for human annotation via `analysis.export_to_json()`.
+
+**Output Format (per task):**
+```json
+{
+  "task_id": 0,
+  "ground_truth": "def fizzbuzz(n): ...",
+  "buggy_solution": "def fizzbuzz(n): ...",
+  "critiques": [
+    {"round": 1, "critique": "..."},
+    {"round": 2, "critique": "..."},
+    {"round": 3, "critique": "..."}
+  ],
+  "scores": {"S1": null, "S2": null, ...}
+}
+```
+
+**Output Directory:** `outputs/analysis_<model>_human_annotation_dataset/`
+
+### Analysis & Annotation
+Annotation and evaluation utilities now live in `analysis.py`:
+- `run_annotate()`
+- `run_extract_annotations()`
+- `run_stats()`
+- `run_alignment_evaluation()`
+
+## Data Flow
+
+```
+data/humaneval_eval_dataset.csv
+         ↓
+    [GENERATE]
+         ↓
+CSV + result, eval, error columns
+         ↓
+    [JUDGE]
+         ↓
+CSV + analysis columns (critiques)
+         ↓
+    [EXPORT]
+         ↓
+outputs/analysis_*/[task_id].json
+         ↓
+    [ANNOTATE]
+         ↓
+JSON + scores
+         ↓
+    [EXTRACT]
+         ↓
+CSV + score columns
+```
+
+## Configuration
+
+### API Setup
+Set `ANTHROPIC_API_KEY` in `.env` file at project root.
+
+### Model Selection
+Edit defaults in `core.py`:
+```python
+DEFAULT_MODEL_NAME = "anthropic/claude-3-haiku-20240307"
+DEFAULT_JUDGE_MODEL_NAME = "anthropic/claude-3-haiku-20240307"
+```
+
+Or specify in CLI:
+```bash
+python -m humaneval.cli generate --model-choice haiku35
+python -m humaneval.cli judge --judge-choice haiku35
+```
+
+### Experiment Settings
+```python
+TEMPERATURE = 0.0  # Deterministic (0.0) or stochastic (>0)
+NUM_ROUNDS = 3     # Critique iterations
+IDX_RANGE = (0, 164)  # Task indices to process
+```
+
+## Error Handling
+
+All LLM API calls include:
+- **Exponential backoff** for transient errors
+- **Retry logic** up to 10 attempts
+- **Error suppression** for litellm logging
+
+## Logging
+
+Standard Python logging at INFO level.
+
+Set verbosity in code:
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)  # For detailed output
+```
+
+## Usage Examples
+
+### Generate Solutions
+```bash
+python -m humaneval.cli generate --model-choice haiku35
+```
+
+### Judge with Different Model
+```bash
+python -m humaneval.cli judge --model-choice haiku35 --judge-choice sonnet35 --judge-id sonnet-judge-v1
+```
+
+### Annotate Specific Directory
+```bash
+python -m humaneval.cli annotate --annotation-dir outputs/analysis_anthropic_claude-3-haiku-20240307_human_annotation_dataset
+```
+
+### View Statistics
+```bash
+python -m humaneval.cli stats
+```
+
+## Performance
+
+Typical runtime (164 tasks):
+- **Generate**: 30-60s per task (~2-4 hours total)
+- **Judge** (3 rounds): 20-30s per task (~2-3 hours per round)
+- **Export**: <1s per task (1 minute total)
+- **Total Pipeline**: ~10-15 hours (serial execution)
+
+## Development
+
+### Add New Model
+```python
+# In core.py
+MODEL_CATALOG = {
+    ...,
+    "my-model": "provider/model-id",
+}
+```
+
+### Add New Command
+```python
+# In cli.py main()
+p_new = sub.add_parser("newcmd", help="Description")
+p_new.add_argument("--arg")
+
+# In command dispatch
+elif args.command == "newcmd":
+    # Call your function
+```
+
+### Testing
+```bash
+# Test import
+python -c "import humaneval; print('OK')"
+
+# Test CLI help
+python -m humaneval.cli --help
+
+# Show statistics
+python -m humaneval.cli stats
+```
+
+## References
+
+- [PROJECT_STRUCTURE.md](../PROJECT_STRUCTURE.md) - Full directory layout
+- [RUNBOOK.md](../RUNBOOK.md) - Detailed execution guide
+- [../README.md](../README.md) - Quick start
